@@ -1,0 +1,103 @@
+#!/bin/sh
+# directryもここで処理すべき
+# === Initialization shell envaironment =========================
+umask 0022
+set -u    
+unset IFS 
+export LC_ALL='C'
+export PATH="$(command -p getconf PATH)${PATH:+:}:${PATH:-}:$(pwd)/skeleton"
+DATE=$(date +"%a, %d %b %Y %H:%M:%S %Z")
+
+# --- 1. get opts
+while getopts t:q:H: OPT
+do
+  case $OPT in
+    t) CT="$OPTARG"
+       ;;
+    q) QUERY_STRING="$OPTARG"
+       [ "$QUERY_STRING" = "N" ] && QUERY_STRING=""
+       ;;
+    H) HEADER="$OPTARG"
+       HEADERS=$(cat<<-END
+	${HEADERS:-}
+	${HEADER}
+	END
+       )
+       ;;
+    esac
+done
+shift $(($OPTIND - 1))
+
+# --- 2. parse arguments
+STATUS=$1                                                       #
+shift                                                           #
+case "$#" in                                                    #
+    0) FILE='-'                                                 #
+       ;;                                                       #
+    1) if   [ -f "$1" ]; then                                   #
+         FILE=$1                                                #
+         CT=$(dftype $FILE)                                     #
+       elif [ -d "$1" ]; then                                   #
+         FILE=${1%/}                                            #
+	 CT="inode/dir"                                         #
+       else                                                     #
+         exit 1                                                 #
+       fi                                                       #
+       ;;                                                       #
+    *) exit 1                                                   #
+       ;;                                                       #
+esac                                                            #
+CONTENTTYPE="Content-Type: ${CT:-}"                             #
+TYPE=${CONTENTTYPE#*/}                                          #
+case $TYPE in                                                   #
+ x-sh) CONTENTTYPE=                                             #
+       FLAG=1                                                   #
+       [ -x "$FILE" ]         || STATUS=403                     #
+       ;;                                                       #
+   md) CONTENTTYPE=                                             #
+       FLAG=2                                                   #
+       [ -x $(which skmd) ]   || STATUS=403                     #
+       ;;                                                       #
+  dir) CONTENTTYPE=                                             #
+       FLAG=4                                                   #
+       [ -x $(which sktree) ] || STATUS=403                     #
+       ;;                                                       #
+  *  ) FLAG=0                                                   #
+       ;;                                                       #
+esac                                                            #
+cat<<-__RESPONSEHEADER                                          |
+	$(printf '%s\n' "$STATUS" | awk '                       #
+	BEGIN{                                                  #
+	  res[200]="OK";                                        #
+	  res[204]="NoContent";                                 #
+	  res[400]="Bad Request";                               #
+	  res[403]="Forbidden";                                 #
+	  res[404]="Not Found";                                 #
+	  res[405]="Method Not Allowed";                        #
+	  res[500]="Internal Server Error";                     #
+	}                                                       #
+	{ printf "HTTP/1.1 %s ", $0;                            #
+	  print ($0 in res) ? res[$0] : Error;                  #
+	}')
+	Date: $DATE
+	Expires: $DATE
+	Server: ${SNAME:-exoskeleton}
+	${HEADERS:-}
+	${CONTENTTYPE:-Content-Type: text/html}
+__RESPONSEHEADER
+grep -v '^$'                                                    |
+sed '/Content-Type/ s/$/; charset="UTF-8"/'                     #
+echo 
+if   [ $(($FLAG & 1)) != 0 ]; then                              #
+     [ -x "$FILE"          ]  && { $FILE ${QUERY_STRING:-}; }  ||
+     { echo "<html><body><h1>403 Forbidden</h1></body></html>"; }
+elif [ $(($FLAG & 2)) != 0 ]; then                              #
+     [ -x $(which skmd)    ]  && { skmd ${FILE} ;     }  ||
+     { echo "<html><body><h1>403 Forbiddon</h1></body></html>"; }
+elif [ $(($FLAG & 4)) != 0 ]; then                              #
+     [ -x $(which sktree)  ]  && { sktree $FILE ;           }  ||
+     { echo "<html><body><h1>403 Forbidden</h1></body></html>"; }
+else
+     cat $FILE
+fi
+exit 0

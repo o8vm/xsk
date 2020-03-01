@@ -1,0 +1,267 @@
+#!/bin/sh
+
+umask 0022
+set -u
+unset IFS
+export LC_ALL='C'
+export PATH="$(command -p getconf PATH)${PATH:+:}:${PATH:-}:$(pwd)/skeleton"
+LF=$(printf '\\\012_')
+LF=${LF%_}
+
+#===============================================================#
+# Comfirm Existance of Required Command                         #
+#===============================================================#
+#                                                               #
+# === 1. (OpenSSL ==============================================#
+if   command -v openssl >/dev/null; then                        #
+    CMD_OSSL='openssl'                                          #
+else                                                            #
+    echo 'OpenSSL command is not found.' && exit 1              #
+fi                                                              #
+#                                                               #
+#===============================================================#
+# END COMFIRMATION                                              #
+#===============================================================#
+
+
+# === description ===============================================
+# chamber -u URI -q query -t METHOD [-v]
+# === getopts ===================================================
+TMPFILE=""
+QUERY_STRING=""
+while getopts u:q:m:t:p:v OPT
+do
+  case $OPT in
+    u) REQUEST_URI="$OPTARG"
+       ;;
+    q) QUERY_STRING="$OPTARG"
+       [ "$QUERY_STRING" = "N" ] && QUERY_STRING=""
+       ;;
+    m) METHOD="$OPTARG"
+       ;;
+    t) THROUGHPATH="$OPTARG"
+       ;;
+    p) URL_PATH="$OPTARG"
+       ;;
+    v) TMPFILE=$(mktemp)
+       ;;
+  esac
+done
+shift $(($OPTIND - 1))
+
+
+#==============================================================#
+# INITIALIZE VALIABLE                                          #
+#==============================================================#
+#                                                              #
+HEADERS=""                                                     #
+if [ ! -n "${XHOST:-}" ];
+then
+  XHOST="exoskeleton.dev"
+fi
+REGION="${XHOST#*.}"
+SERVICE="${XHOST%.*}"
+if [ ! -n "${XUSER:-}" ];
+then
+  XUSER="@ellbrid"
+fi
+# === XSK Secret AccessKey from Credential File ============== #
+XSK_SECRET_KEY="$(cat .xsk/credentials   2>/dev/null           |
+	grep secret                                            |
+	awk 'NR==1{print $2}'                                 )"
+
+#                                                              #
+#==============================================================#
+# END INITIALIZE VALIABLE                                      #
+#==============================================================#
+
+
+#==============================================================#
+# READ HEADERS AND BODY                                        #
+#==============================================================#
+#                                                              #
+# === read headers =========================================== #
+while read -r LINE; do                                         #
+  LINE=$(printf "%s" "$LINE" | tr -d '[\r\n]')                 #
+  HEADERS=$(cat<<-END                                          |
+	${HEADERS:-}
+	${LINE}
+	END
+	grep -v '^$'                                           )
+  [ -z "$LINE" ] && break                                      #
+done                                                           #
+printf "%s %s\n%s\n%s\n%s\n\n"                                 \
+	"$METHOD" "${REQUEST_URI}?${QUERY_STRING:-}" "$HEADERS"\
+        "IP: ${SOCAT_PEERADDR:-N}" "Date: $(TZ=JST-9 date)"    |
+grep -E '(IP|Date|From|^HEAD|^PATCH|^PUT|^DELETE|^GET|^OPTIONS|^POST|Referer)' | 
+        { tr '\n' '\t' ; echo ; }                              |
+        grep -Ev '(googlebot|\.attach|gif|png|ico|robot|\.comments)' \
+	>>"$(dirname $0)/../.log/$(TZ=UTC+0 date '+%Y%m%d').log"
+CONTENT_LENGTH=$(printf "%s" "$HEADERS"                        |
+	grep 'Content-Length:'                                 |
+	awk '{print $2}'                                       )
+#                                                              #
+# === read body ============================================== #
+if [ -n "${TMPFILE:-}" ];
+then
+  dd bs=1 count=${CONTENT_LENGTH:-0} >${TMPFILE:-/dev/null} 2>/dev/null  #
+else
+  exit 0;                                                      #
+fi                                                             #
+#                                                              #
+#==============================================================#
+# END READ HEADERS AND BODY                                    #
+#==============================================================#
+
+#==============================================================#
+# VALIDATE REQUEST                                             #
+#==============================================================#
+#                                                              #
+# === grep Authorization header ============================== #
+AUTHORIZATION=$(printf "%s" "${HEADERS:-}" | grep Authorization)
+XSK_ACCESS_KEYID=$(echo $AUTHORIZATION                         |
+	sed 's/^.*Credential=\(.*\)\/.*\/.*\/.*\/.*/\1/'       )
+if [ "$XSK_ACCESS_KEYID" != "${XUSER#@}" ];                    #
+then                                                           #
+  XSK_ACCESS_KEYID=N                                           #
+fi                                                             #
+SIGNEDHEADERS=$(printf "%s" "${HEADERS:-}" | grep Authorization|
+	awk '{print $4}'                                       |
+	sed 's/SignedHeaders=//'                               |
+        sed 's/;/|/g'                                          |
+	sed 's/,.*$//'                                         )
+HEADERS=$(cat<<-EXAUTH                                         |
+	${HEADERS:-}
+	EXAUTH
+	grep -Ei "($SIGNEDHEADERS)"                            |
+        grep -v 'Authorization'                                )
+#                                                              #
+# === grep X-Xsk-Date ======================================== #
+XXSKDATE=$(printf "%s" "${HEADERS}"                            | 
+	grep 'X-Xsk-Date'                                      |
+	awk '{print $2}'                                       )
+MESSAGEDATE_A=$(TZ=UTC+0 date '+%Y%m%d'                        )
+MESSAGE_TIME=$(echo $XXSKDATE                                  |
+	sed 's/.*T/'"$MESSAGEDATE_A"'T/'                       )
+#                                                              #
+# === grep x-xsk-content-sha256 ============================== #
+CPHHDR=$(cat ${TMPFILE}                                        |
+        openssl dgst -sha256                                   |
+        awk 'NF>1{print $2}NF<2{print $0}'                     |
+        sed 's/^/X-Xsk-Content-Sha256: /'                      )
+CMDHDR=$(cat ${TMPFILE}                                        |
+        openssl dgst -md5 -binary                              |
+        openssl enc -base64                                    |
+        sed 's/^/Content-MD5: /'                               )
+CCLHDR=$(ls -l ${TMPFILE}                                      |
+        awk '{print $5}'                                       |
+        sed 's/^/Content-Length: /'                            )
+HEADERS=$(cat<<-EXHDR                                          |
+	${HEADERS}
+	EXHDR
+        grep -v 'X-Xsk-Content-Sha256:'                        |
+	grep -v 'Content-MD5:'                                 |
+	grep -v 'Content-Length:'                              )
+HEADERS=$(cat<<-ADHDR                                          |
+	${HEADERS:-}
+	${CCLHDR:-}
+	${CMDHDR:-}
+	${CPHHDR:-}
+	ADHDR
+	grep -v '^$'                                           )
+#                                                              #
+# === canonical headers ====================================== #
+CANONICAL_HEADERS=$(cat<<-CANONICALHEADERS                     |
+	${HEADERS:-}
+	CANONICALHEADERS
+	sed 's/^ *//'                                          |
+	grep -v '^$'                                           |
+	awk -F: -v 'OFS=:' '{print tolower($1), $2}'           |
+	sed 's/\([^;]\) /\1/'                                  |
+	sed 's/   *//'                                         |
+	grep -v '^$'                                           |
+	sort                                                   )
+#                                                              #
+# === signed headers ========================================= #
+SIGNED_HEADERS=$(printf "%s" "$CANONICAL_HEADERS"              |
+	cut -d: -f1                                            |
+	sed 's/.*/&;/'                                         |
+	tr -d '\n'                                             |
+	sed 's/;$//'                                           )
+#                                                              #
+# === canonical request ====================================== #
+CANONICAL_REQUEST=$(cat<<-CANONICALREQUEST                     |
+	${METHOD}
+	${REQUEST_URI}
+	${QUERY_STRING}
+	${CANONICAL_HEADERS}
+
+	${SIGNED_HEADERS}
+	${CPHHDR#*: }
+	CANONICALREQUEST
+	sed 's/^ *//'                                          )
+#                                                              #
+# === hash canonical request ================================= #
+CANONICAL_REQUEST_HASH=$(printf "%s" "$CANONICAL_REQUEST"      |
+	openssl dgst -sha256                                   |
+	awk 'NF>1{print $2}NF<2{print $0}'                     )
+#                                                              #
+# === credential scope ======================================= #
+CREDENTIAL_SCOPE=$(printf '%s/%s/%s/xsk4_request'              \
+	"${MESSAGEDATE_A}"                                    \
+	"${REGION}"                                            \
+	"${SERVICE}"                                           )
+#                                                              #
+# === string to sign ========================================= #
+STRING_TO_SIGN=$(cat<<-STRINGTOSIGN                            |
+	XSK4-HMAC-SHA256
+	${MESSAGE_TIME}
+	${CREDENTIAL_SCOPE}
+	${CANONICAL_REQUEST_HASH}
+	STRINGTOSIGN
+	sed 's/^ *//'                                          )
+#                                                              #
+# === XSK version 4 Signature 5 Sign Step ==================== #
+SSTEP0=$(printf "$MESSAGEDATE_A"                                  | 
+	openssl sha256 -hmac "XSK4${XSK_SECRET_KEY}" -binary      |
+        od -v -tx1 -An                                            |
+       	tr -dc '[a-z0-9]'                                         )
+SSTEP1=$(printf "$REGION"                                         |
+	openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP0" -binary |
+        od -v -tx1 -An                                            |
+        tr -dc '[a-z0-9]'                                         )
+SSTEP2=$(printf "${SERVICE}"                                      |
+	openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP1" -binary |
+        od -v -tx1 -An                                            |
+        tr -dc '[a-z0-9]'                                         )
+SSTEP3=$(printf "xsk4_request"                                    |
+	openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP2" -binary |
+        od -v -tx1 -An                                            |
+        tr -dc '[a-z0-9]'                                         )
+SIGNATURE=$(printf "$STRING_TO_SIGN"                              |
+	openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP3" -binary |
+        od -v -tx1 -An                                            |
+        tr -dc '[a-z0-9]'                                         )
+#                                                              #
+# === Making Authorization Headers =========================== #
+printf 'Credential=%s/%s, SignedHeaders=%s, Signature=%s'      \
+	"${XSK_ACCESS_KEYID}"                                  \
+	"${CREDENTIAL_SCOPE}"                                  \
+	"${SIGNED_HEADERS}"                                    \
+	"${SIGNATURE}"                                         |
+sed 's/^/Authorization: XSK4-HMAC-SHA256 /'                    |
+grep '^'                                                       |
+while read -r VA_HDR; do
+  if [ "${VA_HDR}" = "${AUTHORIZATION:-none}" ]
+  then
+    echo ${TMPFILE}
+    exit 0;
+  elif ls $(echo "${URL_PATH:-}" | grep "${THROUGHPATH}") >/dev/null 2>&1
+  then 
+    echo ${TMPFILE}
+    exit 0;
+  else
+    rm ${TMPFILE}
+    exit 1;
+  fi
+done

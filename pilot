@@ -1,0 +1,421 @@
+#!/bin/sh
+
+# === Initialize Shell Environment =============================================
+set -u
+umask 0022
+unset IFS
+export LC_ALL='C'
+export PATH="$(command -p getconf PATH)${PATH:+:}:${PATH:-}"
+export PATH="/usr/local/opt/openssl/bin:$PATH"
+# === prepare ==================================================================
+LF=$(printf '\\\012_')
+LF=${LF%_}
+
+# === Define the functions =====================================================
+error_exit() {
+    ${2+:} false && echo "${0##*/}: $2" 1>&2
+    exit $1
+}
+print_usage_and_exit() {
+cat <<-USAGE 1>&2
+    Usage   : ${0##*/} [options] [config_textfile]
+    Version : 1
+        (POSIX Bourne Shell/POSIX commands)
+USAGE
+  exit 1
+}
+urlenc() {
+instead_of_spc='%20'
+awk '                                                                          #
+BEGIN {                                                                        #
+    # --- prepare                                                              #
+    OFS = "";                                                                  #
+    ORS = "";                                                                  #
+    # --- prepare encoding                                                     #
+    for(i= 0;i<256;i++){c2p[sprintf("%c",i)]=sprintf("%%%02X",i);}             #
+    c2p[" "]="'"$instead_of_spc"'";                                            #
+    for(i=48;i< 58;i++){c2p[sprintf("%c",i)]=sprintf("%c",i);    }             #
+    for(i=65;i< 91;i++){c2p[sprintf("%c",i)]=sprintf("%c",i);    }             #
+    for(i=97;i<123;i++){c2p[sprintf("%c",i)]=sprintf("%c",i);    }             #
+    c2p["-"]="-"; c2p["."]="."; c2p["_"]="_"; c2p["~"]="~";                    #
+    # --- encode                                                               #
+    while (getline line) {                                                     #
+        for (i=1; i<=length(line); i++) {                                      #
+            print c2p[substr(line,i,1)];                                       #
+        }                                                                      #
+        print "\n";                                                            #
+    }                                                                          #
+}'                                                                             |
+awk '                                                                          #
+BEGIN{                                                                         #
+    ORS="";                                                                    #
+    OFS="";                                                                    #
+    getline line;                                                              #
+    print line;                                                                #
+    while (getline line) {                                                     #
+        print "\n",line;                                                       #
+    }                                                                          #
+}                                                                              #
+'
+
+}
+
+utc() {
+awk '{                                                                         #
+    Y = substr($1, 1,4)*1;                                                     #
+    M = substr($1, 5,2)*1;                                                     #
+    D = substr($1, 7,2)*1;                                                     #
+    h = substr($1, 9,2)*1;                                                     #
+    m = substr($1,11,2)*1;                                                     #
+    s = substr($1,13  )*1;                                                     #
+    if (M<3) {M+=12; Y--;}                                                     #
+    print (365*Y+int(Y/4)-int(Y/100)+int(Y/400)                                \
+        +int(306*(M+1)/10)-428+D-719163)*86400+(h*3600)+(m*60)+s;              #
+}'
+}
+
+utcr() {
+awk '{                                                                         #
+    s = $1 % 60;  t = int($1/60);                                              #
+    m =  t % 60;  t = int( t/60);                                              #
+    h =  t % 24;                                                               #
+    days_from_epoch = int( t/24);                                              #
+    max_calced_year = 1970;              # To remember every days on 01/01 from#
+    days_on_Jan1st_from_epoch[1970] = 0; # the Epoch which was calculated once #
+    Y = int(days_from_epoch/365.2425)+1970+1;                                  #
+    if (Y > max_calced_year) {                                                 #
+        i = days_on_Jan1st_from_epoch[max_calced_year];                        #
+        for (j=max_calced_year; j<Y; j++) {                                    #
+            i += (j%4!=0)?365:(j%100!=0)?366:(j%400!=0)?365:366;               #
+            days_on_Jan1st_from_epoch[j+1] = i;                                #
+        }                                                                      #
+        max_calced_year = Y;                                                   #
+    }                                                                          #
+    for (;;Y--) {                                                              #
+        if (days_from_epoch >= days_on_Jan1st_from_epoch[Y]) {                 #
+            break;                                                             #
+        }                                                                      #
+    }                                                                          #
+    split("31 0 31 30 31 30 31 31 30 31 30 31", days_of_month);                #
+    days_of_month[2] = (Y%4!=0)?28:(Y%100!=0)?29:(Y%400!=0)?28:29;             #
+    D = days_from_epoch - days_on_Jan1st_from_epoch[Y] + 1;                    #
+    for (M=1; ; M++) {                                                         #
+        if (D > days_of_month[M]) {                                            #
+            D -= days_of_month[M];                                             #
+        } else {                                                               #
+            break;                                                             #
+        }                                                                      #
+    }                                                                          #
+    printf("%04d%02d%02d%02d%02d%02d\n",Y,M,D,h,m,s);                          #
+}'
+}
+
+# === Comfirm Existance of Required Command ====================================
+# --- 1. (OpenSSL
+if   command -v openssl >/dev/null; then
+    CMD_OSSL='openssl'
+else
+    error_exit 1 'OpenSSL command is not found.'
+fi
+# --- 2. ( wget or curl
+if   command -v curl    >/dev/null; then
+    CMD_CURL='curl'
+    CRHEADERS='--include'
+elif command -v wget    >/dev/null; then
+    CMD_WGET='wget'
+    CRHEADERS='--server-response'
+else
+    error_exit 1 'No HTTP-GET/POST commamd found.'
+fi
+
+
+################################################################################
+# Basic User Information
+################################################################################
+
+# === XSK Access Key ID from Credential File ===================================
+XSK_ACCESS_KEYID="$(cat ../.xsk/credentials 2>/dev/null                         |
+                    grep key_id                                                |
+                    awk 'NR==1{print $2}'                                     )"
+
+# === XSK Secret AccessKey from Credential File ================================
+XSK_SECRET_KEY="$(cat ../.xsk/credentials   2>/dev/null                         |
+                grep secret                                                    |
+                awk 'NR==1{print $2}'                                         )"
+
+
+################################################################################
+# Parse Arguments
+################################################################################
+
+# === Print the usage when "--help" is put =====================================
+case "$# ${1:-}" in
+    '1 -h'|'1 --help'|'1 --version') print_usage_and_exit;;
+esac
+
+# === Select Services with getopts =============================================
+# --- 1. Initialize
+SERVICE=''
+ENDPOINT=''
+UPFILE=''
+VERBOSE=''
+PROTOCOL='http'
+# --- 2. get opts
+while getopts vf:sq OPT
+do
+    case $OPT in
+        f)  UPFILE="$OPTARG"
+            ;;
+        q)  CRHEADERS=''
+            ;;
+        s)  PROTOCOL='https'
+            ;;
+        v)  VERBOSE='--verbose'
+            ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+# === Get the File Path ========================================================
+FILE='-'
+case "$#" in
+    0)  :
+        ;;
+    1)  if [   -f "$1"  ] ||
+          [   -c "$1"  ] ||
+          [   -p "$1"  ] ||
+          [ "_$1" = '_-' ]; then
+          FILE=$1
+        fi
+        ;;
+    *)  print_usage_and_exit
+        ;;
+esac
+
+
+################################################################################
+# RESTful API PARAMS
+################################################################################
+
+#                                                                              #
+# === Time Stamp ===============================================================
+TIMESTAMP="$(TZ=UTC+0 date '+%Y%m%d%H%M%S' | utc)"                             #
+MESSAGEDATE_A="$(echo $TIMESTAMP                                               |
+                utcr                                                           |
+                cut -c 1-8                                                    )"
+MESSAGEDATE_B="$(echo $TIMESTAMP                                               |
+                utcr                                                           |
+                cut -c 9-14                                                   )"
+MESSAGE_TIME="${MESSAGEDATE_A}T${MESSAGEDATE_B}Z"                              #
+TM_HDR="X-Xsk-Date: ${MESSAGE_TIME}"                                           #
+#                                                                              #
+# === Method and URI ===========================================================
+exec <<-____CUTFILE
+$(cat "$FILE")
+____CUTFILE
+read -r METHOD URI                                                             #
+#                                                                              #
+# === Query and Headers ========================================================
+exec <<-____CUTSTDOUT
+$(cat -)
+____CUTSTDOUT
+QUERYANDHEADERS=$(#--- Query Strings & Head -----------------------------------#
+    while read -r LINE; do                                                     #
+        [ -z "$LINE" ] && break                                                #
+        echo $LINE                                                             |
+        awk '                                                                # #
+        $1 !~ /:/ {printf("%s=%s\n", $1, $2)}                                # #
+        $1  ~ /:/ {printf("\n%s %s", $1, $2)}                                ' #
+    done                                                                     | {
+    while read -r QUERY; do                                                    #
+        echo $QUERY                                                            #
+        [ -z "$QUERY" ] && break                                               #
+    done                                                                       |
+    grep -v '^$'                                                               |
+    sort                                                                       |
+    urlenc                                                                     |
+    sed 's/%1[Ee]/%0A/g'                                                       |
+    sed 's/%3[Dd]/=/g'                                                         |
+    tr '\n' '&'                                                                |
+    sed 's/[^\&]$/&\&'"$LF"'/'                                                 |
+    sed 's/&$/'"$LF"'/'                                                        #
+    cat -;                                                                   } )
+QUERY_STRINGS=$(cat <<-____QUERYSTRINGS                                        |
+        $QUERYANDHEADERS
+____QUERYSTRINGS
+    sed 's/^ *//'                                                              |
+    sed -n '/: /!p'                                                            )
+HEADERS=$(cat <<-____HEADERS                                                   |
+        $QUERYANDHEADERS
+____HEADERS
+    sed 's/^ *//'                                                              |
+    sed -n '/: /p'                                                             )
+ENDPOINT=$(cat <<-____ENDPOINT                                                 |
+        $HEADERS
+____ENDPOINT
+    sed 's/^ *//'                                                              |
+    grep '^Host: .*$'                                                          |
+    sed 's/^Host: //'                                                          )
+SERVICE="${ENDPOINT%.*}"                                                       #
+REGION="${ENDPOINT#*.}"                                                        #
+#                                                                              #
+# === Content-Length and Payload hash Header ===================================
+TMP_FILE=$(mktemp)
+trap "exit 1"       HUP INT PIPE QUIT TERM
+trap "rm $TMP_FILE" EXIT
+PH_HDR=$(#---------------------------------------------------------------------#
+cat ${UPFILE:--}    | tee $TMP_FILE                                            \
+                    | "$CMD_OSSL" dgst -sha256                                 \
+                    | awk 'NF>1{print $2}NF<2{print $0}'                       \
+                    | sed 's/^/X-Xsk-Content-Sha256: /'                        )
+MD_HDR=$(#---------------------------------------------------------------------#
+cat $TMP_FILE       | "$CMD_OSSL" dgst -md5 -binary                            \
+                    | "$CMD_OSSL" enc -base64                                  \
+                    | sed 's/^/Content-MD5: /'                                 )
+CL_HDR=$(ls -l      $TMP_FILE                                                  \
+                    | awk '{print $5}'                                         \
+                    | sed 's/^/Content-Length: /'                              )
+#                                                                              #
+# === Update Headers List ======================================================
+HEADERS=$(cat <<-____HEADERS                                                   |
+        ${HEADERS:-}
+        ${ST_HDR:-}
+        ${TM_HDR:-}
+        ${PH_HDR:-}
+        ${MD_HDR:-}
+        ${CL_HDR:-}
+____HEADERS
+    sed 's/^ *//'                                                              |
+    grep -v '^$'                                                               )
+
+################################################################################
+# Authorization Header
+################################################################################
+#                                                                              #
+# === Canonical Headers ========================================================
+CANONICAL_HEADERS=$(cat <<-____CANONICALHEADERS                                |
+        ${HEADERS:-}
+____CANONICALHEADERS
+    sed 's/^ *//'                                                              |
+    grep -v '^$'                                                               |
+    awk -F: -v 'OFS=:' '{print tolower($1),$2}'                                |
+    sed 's/\([^;]\) /\1/'                                                      |
+    sed 's/   *//'                                                             |
+    grep -v '^$'                                                               |
+    sort                                                                       )
+#                                                                              #
+# === Singed Headers ===========================================================
+SIGNED_HEADERS=$(#-------------------------------------------------------------#
+printf "%s" "$CANONICAL_HEADERS"    | cut -d: -f1                              \
+                                    | sed 's/.*/&;/'                           \
+                                    | tr -d '\n'                               \
+                                    | sed 's/;$//'                             )
+#                                                                              #
+# === Canonical Request ========================================================
+CANONICAL_REQUEST=$(cat <<-____CANONICALREQUEST                                |
+        ${METHOD}
+        ${URI}
+        ${QUERY_STRINGS}
+        ${CANONICAL_HEADERS}
+
+        ${SIGNED_HEADERS}
+        ${PH_HDR#*: }
+____CANONICALREQUEST
+    sed 's/^ *//'                                                              )
+#                                                                              #
+# === Hash Canonical Request ===================================================
+CANONICAL_REQUEST_HASH=$(#-----------------------------------------------------#
+printf "%s" "$CANONICAL_REQUEST" | "$CMD_OSSL" dgst -sha256                    \
+                                 | awk 'NF>1{print $2}                       # #
+                                        NF<2{print $0}                       ' )
+#                                                                              #
+# === Credential Scope =========================================================
+CREDENTIAL_SCOPE=$(#-----------------------------------------------------------#
+printf '%s/%s/%s/xsk4_request'                                                 \
+       "${MESSAGEDATE_A}"                                                      \
+       "${REGION}"                                                             \
+       "${SERVICE}"                                                            )
+#                                                                              #
+# === String to Sign ===========================================================
+STRING_TO_SIGN=$(cat <<-____STRINGTOSIGN                                       |
+        XSK4-HMAC-SHA256
+        ${MESSAGE_TIME}
+        ${CREDENTIAL_SCOPE}
+        ${CANONICAL_REQUEST_HASH}
+____STRINGTOSIGN
+    sed 's/^ *//'                                                              )
+#                                                                              #
+# === XSK Version 4 Signature 4 Sign Step ======================================
+SSTEP0=$(printf "$MESSAGEDATE_A"                                               | 
+        openssl sha256 -hmac "XSK4${XSK_SECRET_KEY}" -binary                   |
+        od -v -tx1 -An                                                         |
+        tr -dc '[a-z0-9]'                                                      )
+SSTEP1=$(printf "$REGION"                                                      |
+        openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP0" -binary              |
+        od -v -tx1 -An                                                         |
+        tr -dc '[a-z0-9]'                                                      )
+SSTEP2=$(printf "${SERVICE}"                                                   |
+        openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP1" -binary              |
+        od -v -tx1 -An                                                         |
+        tr -dc '[a-z0-9]'                                                      )
+SSTEP3=$(printf "xsk4_request"                                                 |
+        openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP2" -binary              |
+        od -v -tx1 -An                                                         |
+        tr -dc '[a-z0-9]'                                                      )
+SIGNATURE=$(printf "$STRING_TO_SIGN"                                           |
+        openssl sha256 -mac HMAC -macopt hexkey:"$SSTEP3" -binary              |
+        od -v -tx1 -An                                                         |
+        tr -dc '[a-z0-9]'                                                      )
+#                                                                              #
+# === Request URL ==============================================================
+REQUEST_URL="${ENDPOINT}${URI}?${QUERY_STRINGS:-}"
+[ -z "${QUERY_STRINGS}" ] && REQUEST_URL=${REQUEST_URL%'?'}
+
+
+################################################################################
+# Main
+################################################################################
+#                                                                              #
+# === Making Request ===========================================================
+printf 'Credential=%s/%s, SignedHeaders=%s, Signature=%s'                      \
+       "${XSK_ACCESS_KEYID}"                                                   \
+       "${CREDENTIAL_SCOPE}"                                                   \
+       "${SIGNED_HEADERS}"                                                     \
+       "${SIGNATURE}"                                                          |
+sed 's/^/Authorization: XSK4-HMAC-SHA256 /'                                    |
+grep ^                                                                         |
+while read -r OA_HDR; do                                                       #
+    if   [ -n "${CMD_WGET:-}" ]; then                                          #
+        HEADERS=$(# --- add option string -------------------------------------#
+        printf "%s\n" "$HEADERS" | sed 's/.*/--header="&" /'                   \
+                                 | tr -d '\n'                                  )
+        REQUEST=$(cat <<-________REQUEST                                       |
+            "$CMD_WGET" -q -O - --method="$METHOD"
+                        ${CRHEADERS:-}
+                        --header="$OA_HDR"
+                                 $HEADERS
+                        --body-file="$TMP_FILE"
+                        "${PROTOCOL}://${REQUEST_URL}" 2>&1
+________REQUEST
+        sed 's/^ *//'                                                          |
+        tr '\n' ' '                                                            )
+        eval $REQUEST                                                        | #
+        cat                                                                    #
+    elif [ -n "${CMD_CURL:-}" ]; then                                          #
+        HEADERS=$(# --- add option strings ------------------------------------#
+        printf "%s\n" "$HEADERS" | sed 's/.*/-H "&" /'                         \
+                                 | tr -d '\n'                                  )
+        REQUEST=$(cat <<-________REQUEST                                       |
+	        "$CMD_CURL" "${VERBOSE}" -s -X "$METHOD"
+                        ${CRHEADERS:-}
+	                    -H "$OA_HDR"
+                        $HEADERS
+                        --data-binary @$TMP_FILE
+                        "${PROTOCOL}://${REQUEST_URL}"
+________REQUEST
+        sed 's/^ *//'                                                          |
+        tr '\n' ' '                                                            )
+        eval $REQUEST                                                          #
+    fi                                                                         #
+done                                                                           #
+echo                                                                           #

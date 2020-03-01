@@ -1,0 +1,1 @@
+cat $@ | grep '^GET' | awk '{print $2}' | sed 's/?.*$//' | grep -Ev '(/$|.comment|exoskeleton\.dev)' | grep 'md$' | sort | uniq -c | sort -nr

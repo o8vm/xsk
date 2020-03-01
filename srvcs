@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# chkconfig: 2345 69 1
+# description: exoskeleton
+
+case $1 in
+  start) echo start
+	sudo -u exoskeleton nohup /home/exoskeleton/xsk -p 443 -u "@ellbrid" -h "exoskeleton.dev" -s >&- 2>&- <&- & 
+	exit 0
+	;;
+  re80)  echo http 80 restart
+        killall -u exoskeleton
+        sudo -u exoskeleton nohup /home/exoskeleton/xsk -p 80 -u "@ellbrid" -h "exoskeleton.dev" >&- 2>&- <&- &
+        exit 0
+        ;;  
+  stop)  echo stop
+	killall -u exoskeleton
+        exit 0
+	;;
+  restart) echo restart
+	killall -u exoskeleton
+	sudo -u exoskeleton nohup /home/exoskeleton/xsk -p 443 -u "@ellbrid" -h "exoskeleton.dev" -s >&- 2>&- <&- &
+        exit 0
+	;;
+  status) 
+	if pgrep -f "home/exoskeleton/xsk -p (443|80) -u @ellbrid -h exoskeleton.dev" >/dev/null ; then
+	  echo "exoskeleton is running"
+	else
+	  echo "exoskeleton is not running"
+	fi
+	;;
+esac

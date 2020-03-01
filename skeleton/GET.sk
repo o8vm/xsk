@@ -1,0 +1,75 @@
+#!/bin/sh
+# === Initialize ================================================
+umask 0022
+set -u    
+unset IFS 
+export LC_ALL='C'
+export PATH="$(command -p getconf PATH)${PATH:+:}:${PATH:-}:$(pwd)/skeleton"
+QUERY_STRING=""
+
+# === description ===============================================
+# GET.sk -q query URL_PATH
+# === getopts ===================================================
+while getopts q: OPT
+do
+  case $OPT in
+    q) QUERY_STRING="$OPTARG"
+       [ "$QUERY_STRING" = "N" ] && QUERY_STRING=""
+       ;;
+  esac
+done
+shift $(($OPTIND - 1))
+URL_PATH="${1:-none}"
+
+#===============================================================#
+# SERVE FILE OR DIRECTORY                                       #
+#===============================================================#
+#                                                               #
+# === 1. check if the file exist ============================== #
+if ! ls ${URL_PATH%/} >/dev/null 2>&1                           #
+then                                                            #
+  response 404 <<-RESPONSE
+	<html><body><h1>404 Not Found</h1></body></html>
+	RESPONSE
+  exit 0;                                                       #
+fi                                                              #
+#                                                               #
+# === 2. set index file if exists in PATH ===================== #
+[ -d "$URL_PATH"                -a                              \
+  -f "${URL_PATH}/index.html"   -a                              \
+  -r "${URL_PATH}/index.html" ] &&                              \
+  URL_PATH="${URL_PATH}/index.html"                             #
+#                                                               #
+# === 3. serve ================================================ #
+if   [ -f ${URL_PATH%/} ]; # --- file part -------------------- #
+then                                                            #
+  [ -r ${URL_PATH%/} ] && {                                     #
+  response -q ${QUERY_STRING:-N} 200 "${URL_PATH%/}"            #
+  exit 0;            } || {                                     #
+  response 403 <<-RESPONSE
+	<html><body><h1>403 Forbidden</h1></body></html>
+	RESPONSE
+  exit 0;                                                       #
+  }                                                             #
+elif [ -d ${URL_PATH%/} ]; # --- directory part --------------- #
+then                                                            #
+  [ -x ${URL_PATH%/} ] && {                                     #
+  response 200 "${URL_PATH%/}"                                  #
+  exit 0;            } || {                                     #
+  response 403 <<-RESPONSE
+	<html><body><h1>403 Forbidden</h1></body></html>
+	RESPONSE
+  exit 0;                                                       #
+  }                                                             #
+fi                                                              #
+#                                                               #
+# === 4. Error ================================================ #
+response 500 <<-RESPONSE
+	<html><body><h1>500 Internal Error</h1></body><html>
+	RESPONSE
+exit 0;                                                         #
+#                                                               #
+#===============================================================#
+# END SERVE FILE OR DIRECTORY                                   #
+#===============================================================#
+

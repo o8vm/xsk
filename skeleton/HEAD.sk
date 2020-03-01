@@ -1,0 +1,74 @@
+#!/bin/sh
+# === Initialize ================================================
+umask 0022
+set -u    
+unset IFS 
+export LC_ALL='C'
+export PATH="$(command -p getconf PATH)${PATH:+:}:${PATH:-}:$(pwd)/skeleton"
+QUERY_STRING=""
+
+# === description ===============================================
+# GET.sk -q query URL_PATH
+# === getopts ===================================================
+while getopts q: OPT
+do
+  case $OPT in
+    q) QUERY_STRING="$OPTARG"
+       [ "$QUERY_STRING" = "N" ] && QUERY_STRING=""
+       ;;
+  esac
+done
+shift $(($OPTIND - 1))
+URL_PATH="${1:-none}"
+UPTARGET="${2:-none}"
+
+#===============================================================#
+# SERVE FILE OR DIRECTORY                                       #
+#===============================================================#
+#                                                               #
+# === 1. check if the file exist ============================== #
+if ! ls ${URL_PATH%/} >/dev/null                                #
+then                                                            #
+  response 404 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null                                      #
+  exit 0;                                                       #
+fi                                                              #
+#                                                               #
+# === 3. serve ================================================ #
+if   [ -f ${URL_PATH%/} ]; # --- file part -------------------- #
+then                                                            #
+  [ -r ${URL_PATH%/} ] && {                                     #
+  response 200 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null                                      #
+  exit 0;            } || {                                     #
+  response 403 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null                                      #
+  exit 0;                                                       #
+  }                                                             #
+elif [ -d ${URL_PATH%/} ]; # --- directory part --------------- #
+then                                                            #
+  [ -x ${URL_PATH%/} ] && {                                     #
+  response 200 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null                                      #
+  exit 0;            } || {                                     #
+  response 403 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null                                      #
+  exit 0;                                                       #
+  }                                                             #
+fi                                                              #
+#                                                               #
+# === 4. Error ================================================ #
+response 500 <<-RESPONSE
+	RESPONSE
+rm $UPTARGET 2>/dev/null                                        #
+exit 0;                                                         #
+#                                                               #
+#===============================================================#
+# END SERVE FILE OR DIRECTORY                                   #
+#===============================================================#
+

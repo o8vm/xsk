@@ -1,0 +1,180 @@
+#! /bin/sh
+#####################################################################
+# TREE
+#####################################################################
+#                                                                   #
+# === opts ==========================================================
+DIR="$1"                                                            #
+#                                                                   #
+# === 1.Prepare =====================================================
+LF=$(printf '\\\n_')                                                #
+LF=${LF%_}                                                          #
+#                                                                   #
+TITLE=$( cat $DIR/.memo.md | head -n 1 | sed 's/^# / /')            #
+CDESC=$(cat $DIR/.memo.md | awk '/^# /,/^!--$/' | grep -v '^# '|grep -v '^!--$') #
+
+while getopts t:u: OPT
+do
+  case $OPT in
+    t) XUSER="$OPTARG"
+       ;;
+    u) XHOST="$OPTARG"
+       ;;
+  esac
+done
+shift $(($OPTIND - 1))
+
+cat <<__RESPONSE                                                    |
+<!DOCTYPE html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>${TITLE}</title>
+<meta name="description" content="${CDESC}">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:site" content="${XUSER:-none}" />
+<meta property="og:url" content="$(echo ${XHOST:-none}/${DIR}/ | sed 's/exo\///')" />
+<meta property="og:title" content="${TITLE}" />
+<meta property="og:description" content="${CDESC}" />
+<meta property="og:image" content="https://${XHOST:-none}/.attachments/img/image.png" /> 
+<meta property="og:site_name" content="${XHOST:-none}" />
+<meta property="og:locale" content="ja_JP" />
+
+<meta name="msapplication-TileColor" content="#ffffff">
+<meta name="msapplication-TileImage" content="/.attachments/img/site-tile-150x150.png">
+<meta name="theme-color" content="#f5deb3">
+<link rel="icon" type="image/x-icon" href="/.attachments/img/favicon.ico">
+<link rel="apple-touch-icon" sizes="180x180" href="/.attachments/img/apple-touch-icon-180x180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/.attachments/img/android-chrome-192x192.png">
+<link rel="shortcut icon" type="image/svg+xml" sizes="any" href="/.attachments/img/icon.svg" />
+<link rel="manifest" href="/.attachments/img/manifest.json">
+
+<link rel="stylesheet" href="/.attachments/css/xsktree.css">
+<script src="/.attachments/js/xsktree.js"></script>
+<script src="/.attachments/js/stub.js"></script>
+</head>
+<body>
+<header>
+<section>
+<h1 style="display:none">${TITLE}</h1>
+<h2>TREE ${DIR}</h2>
+</section>
+<p><ul class="breadcrumb">
+$(echo $DIR | 
+awk -F '/' '{
+  for(i=1; i <NF+1; i++) {
+    for (j=1; j <i+1; j++) {
+      printf("%s/", $j); 
+    }
+    printf("\n");
+  } 
+}' |
+awk -v RD=${DIR%%/*} '{
+  printf("<li itemscope=\042itemscope\042 itemtype=\042http://data-vocabulary.org/Breadcrumb\042>\n");
+  cmdline=sprintf("sed \047s:%s::\047",RD);
+  printf("<a href=\042%s\042 itemprop=\042url\042>\n", $0) | cmdline ;
+  close(cmdline);
+  print $0;
+  printf("</a>\n");
+  printf("</li>\n");
+  }'|
+awk -F '/' '/\/$/{ printf("<span itemprop=\042%s\042>%s</span>\n", $(NF-1), $(NF-1));}/^</'
+)
+</ul></p>
+</header>
+
+<main></main>
+<p style="font-size: x-small;">＊ディレクトリツリーは・矢印で展開・1click で詳細表示・2click でリンク先へ</p>
+<div style="position: sticky;position: -webkit-sticky;bottom: 0;"><iframe width="300" height="200" id="stub" ></iframe></div>
+__RESPONSE
+sed 's/^ *//'
+cat <<END
+<script>
+const main = document.querySelector('main');
+const tree = new XskTree( main, {
+  contextmenu: [{
+    label: 'Menu 1',
+    action: function(id) {
+    alert('Menu 1 ' + id);
+    }
+  }, {
+    label: 'Menu 2',
+    action: function(id) {
+    alert('Menu 2 ' + id);
+    }
+  }]
+});
+END
+find "${DIR}"                                                       |
+grep -v '/\..*'                                                     |
+while read TREEPATH                                                 #
+do                                                                  #
+  if [ -d "$TREEPATH" ] ; then                                      #
+     echo "${TREEPATH}%"                                            #
+  else                                                              #
+     echo "${TREEPATH}"                                             #
+  fi                                                                #
+done                                                                |
+awk '{print length() ,$0}' | sort -n | awk '{ print  $2 }'          |
+awk -v RD=${DIR%%/*} '{
+  printf("%s ", $0); 
+  cmdline=sprintf("sed \047s:%s::\047",RD);
+  cmdtile=sprintf("cat %s | grep \047^# \047 | sed \047s/^# //\047  | sed \047s/^/label: /\047 |tr  \047\n\047 \047 \047", $0);
+  if (!/%$/) { printf "" | cmdtile ; }
+  close(cmdtile);
+  printf("link: \047%s\047 })\n", $0) | cmdline ;
+  close(cmdline);
+  }'                                                                |
+sed 's/\(label:\) \(.*\) \(link: .*\)/\1 '"'"'\2'"'"', \3/'         |
+sed 's:^'"${DIR}"'::'                                               |
+grep -v '^% '                                                       |
+awk '/^\//{print $1; for(i=2; i<NF; i++){ printf("%s ", $i);} print $NF }'            |
+awk -F '/' '/^\// && !/md$/{                                   #
+  PARENT=NF-1;                                                      #
+  PNODE=sprintf("%s/",$PARENT);                                     #
+  printf("tree.add({ id: \047%s\047, parent: \047%s\047, label: \047%s\047, ", $NF, (1<PARENT) ? PNODE:"", $NF); }
+  /^\// && /md$/{                                               #
+  PARENT=NF-1;                                                      #
+  PNODE=sprintf("%s/",$PARENT);                                     #
+  printf("tree.add({ id: \047%s\047, parent: \047%s\047, ", $NF, (1<PARENT) ? PNODE:""); }
+  /^link/{print $0}                                                 #
+  /^label/{print $0}'                                               |
+sed 's:%:/:g' 
+cat <<END
+</script>
+END
+cat <<END
+<script>
+main.addEventListener('xtree-select', function(evt) {
+  stub(evt.detail.link);
+  setTimeout(resize, 1500);
+});
+main.addEventListener('xtree-open', function(evt) {
+});
+main.addEventListener('xtree-close', function(evt) {
+});
+addEventListener("load",function(){
+  var clicked = false;
+  var maxClicksDelay = 500;
+  var links= document.getElementsByClassName("xtree-leaf-label");
+  for (var i=0;i<links.length;i++){
+    links[i].addEventListener("click",function(e){
+      if (!clicked) { 
+      clicked = true;
+      setTimeout(function() { clicked = false}, maxClicksDelay );  
+      e.preventDefault();
+      }
+    })
+  }
+});
+window.onload = function () {
+  var link = '$(echo $DIR | sed 's:'"${DIR%%/*}"'::')/';
+  stub(link);
+  setTimeout(resize, 1500)
+};
+</script>
+</body>
+</html>
+END

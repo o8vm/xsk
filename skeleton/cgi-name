@@ -1,0 +1,308 @@
+#!/bin/sh
+
+######################################################################
+#
+# CGI-NAME - Convert "application/x-www-form-urlencoded" into Key-Value
+#            Format (Unicage "Name Format") And URL Decode
+#
+# USAGE: cgi-name [options] <param_file>
+#
+#        <param_file>  "application/x-www-form-urlencoded" text data file
+#        -e<c> ....... Escapes all of the character <c>s in value part of
+#                      CGI variables strings with backshash
+#        -s<c> ....... Replaces all of the space " "s in value part of
+#                      strings with <c>
+#        -n<string> .. Gives <string> as the value if its value part of
+#                      CGI variables is nothing
+#        --template <html>
+#              ....... Adds variable records (value is decided by -n
+#                      option if exists) when the variables do not exist
+#                      in the data from <param_file> even though the same
+#                      variables exist <html> as a <input type="radio">
+#                      or "checkbox}" 
+#
+# Designed originally by Nobuaki Tounaka
+# Written by Shell-Shoccar Japan (@shellshoccarjpn) on 2018-03-26
+#
+# This is a public-domain software (CC0). It means that all of the
+# people can use this for any purposes with no restrictions at all.
+# By the way, we are fed up with the side effects which are brought
+# about by the major licenses.
+#
+######################################################################
+
+
+######################################################################
+# Initial Configuration
+######################################################################
+
+# === Initialize shell environment ===================================
+set -u
+umask 0022
+export LC_ALL=C
+type command >/dev/null 2>&1 && type getconf >/dev/null 2>&1 &&
+export PATH="$(command -p getconf PATH)${PATH+:}${PATH-}"
+export UNIX_STD=2003  # to make HP-UX conform to POSIX
+
+# === Define the functions for printing usage and error message ======
+print_usage_and_exit () {
+  cat <<-USAGE 1>&2
+	Usage   : ${0##*/} [options] <param_file>
+	Args    : <param_file>  "application/x-www-form-urlencoded" text data file
+	Options : -e<c> ....... Escapes all of the character <c>s in value part of
+	                        CGI variables strings with backshash
+	          -s<c> ....... Replaces all of the space " "s in value part of
+	                        strings with <c>
+	          -n<string> .. Gives <string> as the value if its value part of
+	                        CGI variables is nothing
+	          --template <html>
+	                ....... Adds variable records (value is decided by -n
+	                        option if exists) when the variables do not exist
+	                        in the data from <param_file> even though the same
+	                        variables exist <html> as a <input type="radio">
+	                        or "checkbox}" 
+	Version : 2018-03-26 23:19:45 JST
+	          Open usp Tukubai (POSIX Bourne Shell/POSIX commands)
+	USAGE
+  exit 1
+}
+error_exit() {
+  ${2+:} false && echo "${0##*/}: $2" 1>&2
+  exit $1
+}
+
+# === Define some chrs. to escape some special chrs. temporarily =====
+LFs=$(printf '\\\n_');LFs=${LFs%_} # Use as a "\n" in s-command of sed
+
+
+######################################################################
+# Parse Arguments
+######################################################################
+
+# === Get the options and the filepath ===============================
+# --- initialize option parameters -----------------------------------
+opte=''
+opte_is_set=0
+opts=''
+opts_is_set=0
+optn=''
+tmpl_file=''
+param_file=''
+#
+# --- get them -------------------------------------------------------
+case $# in [!0]*)
+  optmode=''
+  i=0
+  for arg in ${1+"$@"}; do
+    i=$((i+1))
+    case "$optmode" in '')
+      case "$arg" in
+        -e*)
+          optmode='e'
+          s=$(printf '%s' "${arg#??}_" | dd bs=1 count=2 2>/dev/null)
+          arg=${s%?}
+          opte_is_set=1
+          ;;
+        -[sd]*)
+          optmode='s'
+          s=$(printf '%s' "${arg#??}_" | dd bs=1 count=2 2>/dev/null)
+          arg=${s%?}
+          opts_is_set=1
+          ;;
+        -[ni]*)
+          optmode='n'
+          arg=${arg#-[ni]}
+          case "$arg" in '') continue;; esac
+          ;;
+        --template)
+          optmode='tmpl'
+          continue
+          ;;
+        *)
+          [ $i -eq $# ] || print_usage_and_exit
+          optmode='param'
+          ;;
+      esac
+      ;;
+    esac
+    case "$optmode" in
+      e)     opte=$arg
+             optmode=''
+             ;;
+      s)     opts=$arg
+             optmode=''
+             ;;
+      n)     optn=$arg
+             optmode=''
+             ;;
+      tmpl)  tmpl_file=$arg
+             optmode=''
+             ;;
+      param) param_file=$arg
+             optmode=''
+             ;;
+    esac
+  done
+  ;;
+esac
+
+# === Validate the arguments =========================================
+use_stdin=0
+if   [ "_$param_file" = '_'                ] ||
+     [ "_$param_file" = '_-'               ] ||
+     [ "_$param_file" = '_/dev/stdin'      ] ||
+     [ "_$param_file" = '_/dev/fd/0'       ] ||
+     [ "_$param_file" = '_/proc/self/fd/0' ]  ; then
+  use_stdin=$((use_stdin+1))
+  param_file=''
+elif [ -f "$param_file"                    ] ||
+     [ -c "$param_file"                    ] ||
+     [ -p "$param_file"                    ]  ; then
+  [ -r "$param_file" ] || error_exit 1 'Cannot open the file: '"$param_file"
+  case "$param_file" in /*|./*|../*) :;; *) param_file="./$param_file";; esac
+else
+  print_usage_and_exit
+fi
+if   [ "_$tmpl_file"  = '_'                ] ; then
+  :
+elif [ "_$tmpl_file"  = '_-'               ] ||
+     [ "_$tmpl_file"  = '_/dev/stdin'      ] ||
+     [ "_$tmpl_file"  = '_/dev/fd/0'       ] ||
+     [ "_$tmpl_file"  = '_/proc/self/fd/0' ]  ; then
+  use_stdin=$((use_stdin+1))
+  tmpl_file='-'  # set '-' when stdin is meant to tell from unset case
+elif [ -f "$tmpl_file"                     ] ||
+     [ -c "$tmpl_file"                     ] ||
+     [ -p "$tmpl_file"                     ]  ; then
+  [ -r "$tmpl_file"  ] || error_exit 1 'Cannot open the file: '"$tmpl_file"
+  case "$tmpl_file"  in /*|./*|../*) :;; *)  tmpl_file="./$tmpl_file" ;; esac
+else
+  print_usage_and_exit
+fi
+[ $use_stdin -gt 1 ] && error_exit 1 'Not allowed to open STDIN more than once'
+
+
+######################################################################
+# Prepare for the Main Routine
+######################################################################
+
+# === Extract variable name from the template file if exists =========
+tmplvars=''
+case "$tmpl_file" in '') :;; *)
+  tmplvars=$(cat "$tmpl_file"                                               |
+             tr '\r\n' '  '                                                 |
+             grep ^                                                         |
+             sed 's/\(<[Ii][Nn][Pp][Uu][Tt] [^>]*>\)/'"$LFs"'\1'"$LFs"'</g' |
+             grep     '<[Ii][Nn][Pp][Uu][Tt] '                              |
+             grep -iE ' type=["'"'"']?(radio\>|checkbox\>)'                 |
+             grep -iE ' name="[^"]*"| name='"'"'[^'"'"']*'"'"'| name=[^ ] ' |
+             sed 's/^.*[Nn][Aa][Mm][Ee]="\([^"]*\)".*$/\1/'                 |
+             sed 's/^.*[Nn][Aa][Mm][Ee]='"'"'\([^'"'"']*\)'"'"'.*$/\1/'     |
+             sed 's/^.*[Nn][Aa][Mm][Ee]=\([^ ]*\) .*$/\1/'                  |
+             grep -v  '[^][A-Za-z0-9_.:-]'                                  |
+             sort                                                           |
+             uniq                                                           |
+             tr '\n' ' '                                                    |
+             grep ^                                                         |
+             sed 's/ $//'                                                   )
+;; esac
+
+
+######################################################################
+# Main Routine
+######################################################################
+
+# === transfer the CGI variables string to the "Unicage name format" =
+export   opte opte_is_set   opts opts_is_set   optn   tmplvars
+grep '' ${param_file:+"$param_file"}                     |
+sed 's/\(%[0-9A-Fa-f][0-9A-Fa-f]\)/'"$LFs"'\1'"$LFs"'/g' |
+sed '/^%/y/abcdef/ABCDEF/'                               |
+tr -d '\n'                                               |
+grep ^                                                   |
+case $opte_is_set in                                     #
+  0) cat                                 ;;              #
+  *) sed 's/%5C/\\/g' | sed 's/\\/\\\\/g';;              #
+esac                                                     |
+sed 's/%0D%0A/\\n/g'                                     |
+sed 's/%0A/\\n/g'                                        |
+sed 's/&/'"$LFs"'/g'                                     |
+sed 's/+/ /g'                                            |
+grep '^[^=]\{1,\}='                                      |
+exec awk '
+BEGIN {
+  for (i = 0; i < 256; i++) {
+    s = sprintf("%02X",i);
+    chr[s] = sprintf("%c",i);
+  }
+  opte        = ENVIRON["opte"       ];
+  opte_is_set = ENVIRON["opte_is_set"];
+  if (opte_is_set==1 && opte=="") {opte="\\";}
+  opts        = ENVIRON["opts"       ];
+  opts_is_set = ENVIRON["opts_is_set"];
+  optn        = ENVIRON["optn"       ];
+  tmplvars    = ENVIRON["tmplvars"   ];
+  split(tmplvars, array0);
+  for (var in array0) { tmplvar[array0[var]]=""; }
+  split("", array0);
+}
+{
+  # --- separate key and value(contains %XX) -------------------------
+  i    = index($0,"=");
+  key  = substr($0,1  ,i-1);
+  val0 = substr($0,i+1    );
+  val  = "";
+
+  # --- convert the value(contains %XX) into the value (not contains %XX)
+  while (match(val0,/%[0-9A-F][0-9A-F]/)) {
+    hex  = substr(val0, RSTART+1, 2);
+    val  = val substr(val0, 1, RSTART-1) chr[hex];
+    val0 = substr(val0, RSTART+3);
+  }
+  val = val val0;
+
+  # --- treat the val for option "-e", "-s", "-n" --------------------
+  if (val == "") {
+    # --- [A] val is null
+    # 1) set default value (optn) if the val is not set and optn is set
+    if (optn != "") {val=optn;}
+  } else {
+    # --- [B] val is set
+    # 1) escape the charater which is set by opte if opte is set
+    if ((opte_is_set) && (opte!="\\")) {
+      s = "";
+      while (1) {
+        i   = index(val,opte);
+        if (i==0) {break;}
+        s   = s substr(val, 1  , i-1) "\\" opte;
+        val =   substr(val, i+1     )          ;
+      }
+      val = s val;
+    }
+    # 2) replace " " into the string which is set by opts if opts is set
+    if (opts_is_set) {
+      s = "";
+      while (1) {
+        i   = index(val," ");
+        if (i==0) {break;}
+        s   = s substr(val, 1  , i-1) opts;
+        val =   substr(val, i+1     )     ;
+      }
+      val = s val;
+    }
+  }
+
+  # --- delete the key from complement keys for the option "--template"
+  if (key in tmplvar) {delete tmplvar[key];}
+
+  # --- print key and value ------------------------------------------
+  if (val!="") {print key, val;} else {print key;}
+}
+END {
+  if (optn != "") {
+    for (var in tmplvar) {print var, optn;}
+  } else {
+    for (var in tmplvar) {print var      ;}
+  }
+}
+'
+

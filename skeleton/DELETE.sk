@@ -1,0 +1,80 @@
+#!/bin/sh
+# === Initialize ================================================
+umask 0022
+set -u    
+unset IFS 
+export LC_ALL='C'
+export PATH="$(command -p getconf PATH)${PATH:+:}:${PATH:-}:$(pwd)/skeleton"
+QUERY_STRING=""
+
+# === description ===============================================
+# PUT.sk -q query URL_PATH TARGET
+# === getopts ===================================================
+while getopts q: OPT
+do
+  case $OPT in
+    q) QUERY_STRING="$OPTARG"
+       [ "$QUERY_STRING" = "N" ] && QUERY_STRING=""
+       ;;
+  esac
+done
+shift $(($OPTIND - 1))
+URL_PATH="${1:-none}"
+UPTARGET="${2:-none}"
+
+#################################################################
+# DELETE FILE OR DIRECTORY                                      #
+#################################################################
+#                                                               #
+# === 0 check if the file or dir exists ======================= #
+if ! ls ${URL_PATH%/} >/dev/null                                #
+then
+  response 404 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null                                      #
+  exit 0;                                                       #
+fi                                                              #
+#                                                               #
+# === 1 DELETE  =============================================== #
+if   [ -f ${URL_PATH%/} ];# --- file part --------------------- #
+then                                                            #
+  [ -r ${URL_PATH%/} ] && {                                     #
+  rm ${URL_PATH%/}   2>/dev/null                                #
+  response 204 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null
+  exit 0;            } || {                                     #
+  response 403 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null
+  exit 0;                                                       #
+  }                                                             #
+elif [ -d ${URL_PATH%/} ];# --- directory part ---------------- #
+then
+  [ -x ${URL_PATH%/} ] && {                                     #
+  if rm "${URL_PATH}.memo.md" && rmdir ${URL_PATH%/} 2>/dev/null;
+  then                                                          #
+  response 204 <<-RESPONSE
+	RESPONSE
+  else                                                          #
+  response 500 <<-RESPONSE
+	RESPONSE
+  fi                                                            #
+  rm $UPTARGET 2>/dev/null                                      #
+  exit 0;            } || {                                     #
+  response 403 <<-RESPONSE
+	RESPONSE
+  rm $UPTARGET 2>/dev/null
+  exit 0;                                                       #
+  }                                                             #
+fi                                                              #
+#                                                               #
+# === 4. Error ================================================ #
+response 500 <<-RESPONSE
+	RESPONSE
+rm $UPTARGET 2>/dev/null
+exit 0                                                          #
+#                                                               #
+#===============================================================#
+# END DELETE FILE OR DIRECTORY                                  #
+#===============================================================#
