@@ -70,14 +70,6 @@ The implementation uses the find command.
 Comments can be added to each article.
 
 ## Operation example and usage
-The actual web service created with XSK is as follows. 
-It's just a personal blog:
-
-[EXOSKELETON.DEV](https://exoskeleton.dev/)
-
-The above site is completely made only with shell script and pure JavaScript.
-The directory structure of XSK is as follows.
-
 ### XSK (EXOSKELETON) structure and startup
 
 ```shell
